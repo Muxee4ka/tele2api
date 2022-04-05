@@ -19,6 +19,7 @@ class Tele2Api:
         self.rests_api = f'{base_api}/rests'
         self.profile_api = f'{base_api}/profile'
         self.balance_api = f'{base_api}/balance'
+        self.service_api = f'{base_api}/services'
         self.url_validation = URL_VALIDATION + self._phone_number
         self.url_auth = URL_AUTH
         self.url_reset_option = URL_RESET_OPTION + self._phone_number
@@ -42,7 +43,7 @@ class Tele2Api:
         data = json.dumps(data)
         response = self.session.post(self.url_validation, data=data)
         if not _get_status_code(response):
-            return response.json()['detail']
+            return response.json().get('detail')
         return 'OK'
 
     def reset_password(self):
@@ -52,9 +53,7 @@ class Tele2Api:
         """
         data = json.dumps({})
         response_option = self.session.get(self.url_reset_option)
-        print(response_option.text)
         response_pass = self.session.post(self.url_reset_pass, data=data)
-        print(response_pass.text)
         if not _get_status_code(response_option):
             return _get_status_code(response_option)
         return 'OK'
@@ -71,6 +70,8 @@ class Tele2Api:
         self.session.headers['Content-Type'] = 'application/x-www-form-urlencoded'
         response = self.session.post(self.url_auth, data_auth, verify=False)
         if _get_status_code(response):
+            self.access_token = response.json()['access_token']
+            self.refresh_token = response.json()['refresh_token']
             return response.json()['access_token'], response.json()['refresh_token']
         return response.json()['error_description']
 
@@ -106,7 +107,6 @@ class Tele2Api:
         response = self.session.get(self.rests_api)
         response_json = response.json()
         rests = list(response_json['data']['rests'])
-        print(rests)
         sellable = [a for a in rests if a['type'] == 'tariff' and a['rollover'] == False]
         return {
             'data': int(
@@ -188,10 +188,31 @@ class Tele2Api:
         :return: Получаем список активных лотов
         """
         response = self.session.get(self.market_api)
+        # print(response.json())
         if _get_status_code(response):
             response_json = response.json()
             lots = list(response_json['data'])
             active_lots = [a for a in lots if a['status'] == 'active']
             return active_lots
+
+    def mixx_update_subscribe(self, action="enable"):
+        json_data = {
+            'operationType': 'change_service',
+            'changedServices': [
+                {
+                    'billingServiceId': '31299',
+                    'action': action,
+                },
+            ],
+        }
+        response = self.session.post(f'{self.service_api}/notifications/check',
+                                 json=json_data)
+        if action == "enable":
+            response = self.session.put(f'{self.service_api}/31299')
+        elif action == "disable":
+            response = self.session.delete(f'{self.service_api}/31299')
+        if not _get_status_code(response):
+            return response.json()
+        return 'OK'
 
 

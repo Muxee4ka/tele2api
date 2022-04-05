@@ -1,7 +1,7 @@
 HEADERS = {
             'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
             "Cache-Control": "max-age=0",
-            'Tele2-User-Agent': '"mytele2-app/3.17.0"; "unknown"; "Android/9"; "Build/12998710"',
+            'Tele2-User-Agent': '"mytele2-app/4.10.0"; "unknown"; "Android/11"; "Build/164289583"',
             'X-API-Version': '1',
             'User-Agent': 'okhttp/4.2.0',
             'Accept-Encoding': 'gzip, deflate',
