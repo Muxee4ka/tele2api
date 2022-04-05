@@ -120,7 +120,7 @@ class Tele2Api:
         Создание нового лота
         :param emojis: если не хотим использовать, оставляем 'None', либо передаем значение 'random',
         либо список необходимых эмоджи: 'cat', 'scream', 'bomb', 'rich', 'zipped', 'tongue', 'cool', 'devil'
-        :param traffic_type: тип трафика ('voice' или 'gb')
+        :param traffic_type: тип трафика ('voice' или 'data')
         :param value: число минут или Гб одного лота
         :param amount: стоимость лота
         :return:
@@ -132,6 +132,7 @@ class Tele2Api:
                        'uom': 'min' if traffic_type == 'voice' else 'gb'}
         })
         if not _get_status_code(response):
+            print(response.json())
             return response.json()['meta']['status']
         id_lot = response.json()["data"]["id"]
         if emojis != 'None':
