@@ -43,7 +43,6 @@ setup(
     classifiers=[],
     entry_points={
         'console_scripts':
-            ['tele2api = tele2api.tele2_api:Tele2Api',
-			 'tele2_config = tele2api.tele2_config']
+            ['tele2api = tele2api.tele2_api:Tele2Api']
     }
 )
