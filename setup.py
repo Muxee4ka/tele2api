@@ -1,6 +1,6 @@
 from setuptools import find_packages
-from distutils.core import setup
 import os
+from distutils.core import setup
 
 # User-friendly description from README.md
 current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -11,34 +11,39 @@ except Exception:
     long_description = ''
 
 setup(
-	# Name of the package 
-	name='tele2api',
-	# Packages to include into the distribution 
-	packages=find_packages('.'),
-	# Start with a small number and increase it with 
-	# every change you make https://semver.org 
-	version='1.0.0',
-	# Chose a license from here: https: // 
-	# help.github.com / articles / licensing - a - 
-	# repository. For example: MIT 
-	license='',
-	# Short description of your library 
-	description='',
-	# Long description of your library 
-	long_description=long_description,
-	long_description_content_type='text/markdown',
-	# Your name 
-	author='',
-	# Your email 
-	author_email='',
-	# Either the link to your github or to your website 
-	url='',
-	# Link from which the project can be downloaded 
-	download_url='',
-	# List of keywords 
-	keywords=[],
-	# List of packages to install with this one 
-	install_requires=[],
-	# https://pypi.org/classifiers/ 
-	classifiers=[]
+    # Name of the package
+    name='tele2api',
+    # Packages to include into the distribution
+    packages=find_packages('.'),
+    # Start with a small number and increase it with
+    # every change you make https://semver.org
+    version='1.0.0',
+    # Chose a license from here: https: //
+    # help.github.com / articles / licensing - a -
+    # repository. For example: MIT
+    license='',
+    # Short description of your library
+    description='',
+    # Long description of your library
+    long_description=long_description,
+    long_description_content_type='text/markdown',
+    # Your name
+    author='',
+    # Your email
+    author_email='',
+    # Either the link to your github or to your website
+    url='',
+    # Link from which the project can be downloaded
+    download_url='',
+    # List of keywords
+    keywords=[],
+    # List of packages to install with this one
+    install_requires=["requests==2.27.1"],
+    # https://pypi.org/classifiers/
+    classifiers=[],
+    entry_points={
+        'console_scripts':
+            ['tele2api = tele2api.tele2_api:Tele2Api',
+			 'tele2_config = tele2api.tele2_config']
+    }
 )
