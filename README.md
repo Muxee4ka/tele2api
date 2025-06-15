@@ -9,14 +9,15 @@ Basic operations for creating and managing lots are supported.
 ```python
 from tele2api import Tele2Api
 
-client = Tele2Api("79001234567")
+phone = "79001234567"
+client = Tele2Api(phone)
 client.get_sms_code()
-token, refresh = client.authorization("123456")
+token, refresh = client.authorization(input("Enter SMS code: "))
 
 balance = client.get_balance()
 print(balance)
 
 # or use a context manager
-with Tele2Api("79001234567", access_token=token) as api:
+with Tele2Api(phone, access_token=token) as api:
     print(api.get_active_lots())
 ```

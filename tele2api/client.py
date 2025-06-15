@@ -9,25 +9,25 @@ import requests
 
 
 HEADERS: Dict[str, str] = {
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5",
+    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
     "Cache-Control": "max-age=0",
-    "Tele2-User-Agent": '"mytele2-app/4.14.0"; "unknown"; "Android/11"; "Build/164755374"',
-    "X-API-Version": "1",
-    "User-Agent": "okhttp/4.2.0",
-    "Accept-Encoding": "gzip, deflate",
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    "Connection": "keep-alive",
+    'Tele2-User-Agent': '"mytele2-app/4.17.0"; "unknown"; "Android/11"; "Build/165135449"',
+    'X-API-Version': '1',
+    'User-Agent': 'okhttp/4.9.2',
+    'Accept-Encoding': 'gzip, deflate',
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/json',
+    'Connection': 'keep-alive'
 }
 
-MAIN_API = "https://my.tele2.ru/api/subscribers/"
-URL_VALIDATION = "https://my.tele2.ru/api/validation/number/"
-URL_AUTH = "https://my.tele2.ru/auth/realms/tele2-b2c/protocol/openid-connect/token"
+MAIN_API = "https://msk.t2.ru/api/subscribers/"
+URL_VALIDATION = "https://msk.t2.ru/api/validation/number/"
+URL_AUTH = "https://msk.t2.ru/auth/realms/tele2-b2c/protocol/openid-connect/token"
 URL_RESET_OPTION = (
-    "https://my.tele2.ru/auth/realms/tele2-b2c/credential-management/reset-options?username="
+    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-options?username="
 )
 URL_RESET_PASS = (
-    "https://my.tele2.ru/auth/realms/tele2-b2c/credential-management/reset-password?username="
+    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-password?username="
 )
 
 
@@ -78,7 +78,7 @@ class Tele2Api:
     def get_sms_code(self, operation: Optional[str] = None) -> str:
         """Request a one-time SMS code for authorization."""
 
-        data: Dict[str, str] = {"sender": "Tele2"}
+        data: Dict[str, str] = {"sender": "t2.ru"}
         if operation:
             data["operation"] = operation
         response = self.session.post(self.url_validation, json=data)
