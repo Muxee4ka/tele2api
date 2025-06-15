@@ -17,7 +17,7 @@ setup(
     packages=find_packages('.'),
     # Start with a small number and increase it with
     # every change you make https://semver.org
-    version='1.0.0',
+    version='1.1.0',
     # Chose a license from here: https: //
     # help.github.com / articles / licensing - a -
     # repository. For example: MIT
@@ -43,6 +43,6 @@ setup(
     classifiers=[],
     entry_points={
         'console_scripts':
-            ['tele2api = tele2api.tele2_api:Tele2Api']
+            ['tele2api = tele2api.client:Tele2Api']
     }
 )

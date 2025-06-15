@@ -1,4 +1,5 @@
 # tele2api
-API Tele2
-API для работы с маркетом Теле2.
-Работает авторизация как по постоянному паролю, так и по смс.
+Python client for Tele2 market API.
+
+The library allows you to authorise either using a permanent password or via a one time SMS code.
+Basic operations for creating and managing lots are supported.
