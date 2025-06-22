@@ -3,12 +3,42 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
+import os
+import pickle
 
 import requests
 
 
 HEADERS: Dict[str, str] = {
+    token_file: Optional[Path] = None
+        if self.token_file is None:
+            self.token_file = Path(f".tele2api_{self.phone_number}.pickle")
+        if not self.access_token and self.token_file and self.token_file.exists():
+            try:
+                with open(self.token_file, "rb") as fh:
+                    data = pickle.load(fh)
+                    self.access_token = data.get("access_token", "")
+                    self.refresh_token = data.get("refresh_token", "")
+                    if self.access_token:
+                        self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            except Exception:
+                pass
+        if not self.access_token:
+            print("Requesting SMS code...")
+            self.get_sms_code()
+            sms_code = input("Enter SMS code: ")
+            result = self.authorization(sms_code)
+            if isinstance(result, tuple):
+                if self.token_file:
+                    try:
+                        with open(self.token_file, "wb") as fh:
+                            pickle.dump({"access_token": self.access_token, "refresh_token": self.refresh_token}, fh)
+                    except Exception:
+                        pass
+            else:
+                raise RuntimeError(f"Authorization failed: {result}")
     'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
     "Cache-Control": "max-age=0",
     'Tele2-User-Agent': '"mytele2-app/4.17.0"; "unknown"; "Android/11"; "Build/165135449"',
