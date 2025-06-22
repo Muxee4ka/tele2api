@@ -12,13 +12,13 @@ import requests
 
 
 HEADERS: Dict[str, str] = {
-    token_file: Optional[Path] = None
-        if self.token_file is None:
-            self.token_file = Path(f".tele2api_{self.phone_number}.pickle")
-        if not self.access_token and self.token_file and self.token_file.exists():
-            try:
-                with open(self.token_file, "rb") as fh:
-                    data = pickle.load(fh)
+    "Tele2-User-Agent": '"mytele2-app/4.17.0"; "unknown"; "Android/11"; "Build/165135449"',
+    "User-Agent": "okhttp/4.9.2",
+MAIN_API = "https://msk.t2.ru/api/subscribers/"
+URL_VALIDATION = "https://msk.t2.ru/api/validation/number/"
+URL_AUTH = "https://msk.t2.ru/auth/realms/tele2-b2c/protocol/openid-connect/token"
+    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-options?username="
+    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-password?username="
                     self.access_token = data.get("access_token", "")
                     self.refresh_token = data.get("refresh_token", "")
                     if self.access_token:
@@ -83,7 +83,7 @@ class Tele2Api:
         self.rests_api = f"{base_api}/rests"
         self.profile_api = f"{base_api}/profile"
         self.balance_api = f"{base_api}/balance"
-        self.service_api = f"{base_api}/services"
+        data: Dict[str, str] = {"sender": "t2.ru"}
         self.url_validation = URL_VALIDATION + self.phone_number
         self.url_auth = URL_AUTH
         self.url_reset_option = URL_RESET_OPTION + self.phone_number
