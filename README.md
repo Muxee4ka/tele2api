@@ -1,6 +1,7 @@
 # tele2api
 Python client for Tele2 market API.
 
+Since Tele2 uses an NGINX challenge, requests are performed through Playwright to bypass it.
 The library allows you to authorise either using a permanent password or via a one time SMS code.
 Basic operations for creating and managing lots are supported.
 
