@@ -1,4 +1,27 @@
 # tele2api
-API Tele2
-API для работы с маркетом Теле2.
-Работает авторизация как по постоянному паролю, так и по смс.
+Python client for Tele2 market API.
+
+The library allows you to authorise either using a permanent password or via a one time SMS code.
+Basic operations for creating and managing lots are supported.
+
+## Usage
+
+```python
+from tele2api import Tele2Api
+
+# use a context manager with saved tokens
+
+# or let the context manager handle authorization
+with Tele2Api("79001234567") as api:
+    print(api.get_balance())
+client = Tele2Api(phone)
+client.get_sms_code()
+token, refresh = client.authorization(input("Enter SMS code: "))
+
+balance = client.get_balance()
+print(balance)
+
+# or use a context manager
+with Tele2Api(phone, access_token=token) as api:
+    print(api.get_active_lots())
+```
