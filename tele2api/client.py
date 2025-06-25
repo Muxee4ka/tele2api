@@ -10,36 +10,13 @@ import pickle
 
 import requests
 
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    sync_playwright = None
 
 HEADERS: Dict[str, str] = {
-    "Tele2-User-Agent": '"mytele2-app/4.17.0"; "unknown"; "Android/11"; "Build/165135449"',
-    "User-Agent": "okhttp/4.9.2",
-MAIN_API = "https://msk.t2.ru/api/subscribers/"
-URL_VALIDATION = "https://msk.t2.ru/api/validation/number/"
-URL_AUTH = "https://msk.t2.ru/auth/realms/tele2-b2c/protocol/openid-connect/token"
-    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-options?username="
-    "https://msk.t2.ru/auth/realms/tele2-b2c/credential-management/reset-password?username="
-                    self.access_token = data.get("access_token", "")
-                    self.refresh_token = data.get("refresh_token", "")
-                    if self.access_token:
-                        self.session.headers["Authorization"] = f"Bearer {self.access_token}"
-            except Exception:
-                pass
-        if not self.access_token:
-            print("Requesting SMS code...")
-            self.get_sms_code()
-            sms_code = input("Enter SMS code: ")
-            result = self.authorization(sms_code)
-            if isinstance(result, tuple):
-                if self.token_file:
-                    try:
-                        with open(self.token_file, "wb") as fh:
-                            pickle.dump({"access_token": self.access_token, "refresh_token": self.refresh_token}, fh)
-                    except Exception:
-                        pass
-            else:
-                raise RuntimeError(f"Authorization failed: {result}")
-    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5",
     "Cache-Control": "max-age=0",
     'Tele2-User-Agent': '"mytele2-app/4.17.0"; "unknown"; "Android/11"; "Build/165135449"',
     'X-API-Version': '1',
@@ -47,7 +24,7 @@ URL_AUTH = "https://msk.t2.ru/auth/realms/tele2-b2c/protocol/openid-connect/toke
     'Accept-Encoding': 'gzip, deflate',
     'Accept': 'application/json, text/plain, */*',
     'Content-Type': 'application/json',
-    'Connection': 'keep-alive'
+    'Connection': 'keep-alive',
 }
 
 MAIN_API = "https://msk.t2.ru/api/subscribers/"
@@ -61,10 +38,45 @@ URL_RESET_PASS = (
 )
 
 
-def _is_success(response: requests.Response) -> bool:
-    """Return ``True`` if response status code is 200."""
+def _is_success(response) -> bool:
+    status = getattr(response, "status_code", getattr(response, "status", 0))
+    return status == 200
 
-    return response.status_code == 200
+
+class PlaywrightSession:
+    """Minimal wrapper around Playwright request context."""
+
+    def __init__(self, headers: Optional[Dict[str, str]] = None) -> None:
+        if sync_playwright is None:
+            raise RuntimeError("playwright is not installed")
+        self._playwright = sync_playwright().start()
+        self._context = self._playwright.request.new_context()
+        self.headers: Dict[str, str] = headers or {}
+        if self.headers:
+            self._context.set_extra_http_headers(self.headers)
+
+    def update_headers(self, headers: Dict[str, str]) -> None:
+        self.headers.update(headers)
+        self._context.set_extra_http_headers(self.headers)
+
+    def get(self, *args, **kwargs):
+        return self._context.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        return self._context.post(*args, **kwargs)
+
+    def put(self, *args, **kwargs):
+        return self._context.put(*args, **kwargs)
+
+    def patch(self, *args, **kwargs):
+        return self._context.patch(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        return self._context.delete(*args, **kwargs)
+
+    def close(self) -> None:
+        self._context.dispose()
+        self._playwright.stop()
 
 
 @dataclass
@@ -74,7 +86,9 @@ class Tele2Api:
     phone_number: str
     access_token: str = ""
     refresh_token: str = ""
-    session: requests.Session = field(default_factory=requests.Session, init=False)
+    token_file: Optional[Union[str, Path]] = None
+    use_playwright: bool = True
+    session: object = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         base_api = f"{MAIN_API}{self.phone_number}"
@@ -83,18 +97,63 @@ class Tele2Api:
         self.rests_api = f"{base_api}/rests"
         self.profile_api = f"{base_api}/profile"
         self.balance_api = f"{base_api}/balance"
-        data: Dict[str, str] = {"sender": "t2.ru"}
+        self.service_api = f"{base_api}/services"
         self.url_validation = URL_VALIDATION + self.phone_number
         self.url_auth = URL_AUTH
         self.url_reset_option = URL_RESET_OPTION + self.phone_number
         self.url_reset_pass = URL_RESET_PASS + self.phone_number
-        self.session.headers.update({"Authorization": f"Bearer {self.access_token}", **HEADERS})
+
+        if self.use_playwright:
+            self.session = PlaywrightSession()
+        else:
+            self.session = requests.Session()
+
+        self.update_headers({"Authorization": f"Bearer {self.access_token}", **HEADERS})
+
+        if self.token_file and not self.access_token:
+            token_path = Path(self.token_file)
+            if token_path.exists():
+                try:
+                    with token_path.open("rb") as fh:
+                        data = pickle.load(fh)
+                        self.access_token = data.get("access_token", "")
+                        self.refresh_token = data.get("refresh_token", "")
+                        if self.access_token:
+                            self.update_headers({"Authorization": f"Bearer {self.access_token}"})
+                except Exception:
+                    pass
+            if not self.access_token:
+                print("Requesting SMS code...")
+                self.get_sms_code()
+                sms_code = input("Enter SMS code: ")
+                result = self.authorization(sms_code)
+                if isinstance(result, tuple):
+                    try:
+                        token_path.parent.mkdir(parents=True, exist_ok=True)
+                        with token_path.open("wb") as fh:
+                            pickle.dump(
+                                {"access_token": self.access_token, "refresh_token": self.refresh_token},
+                                fh,
+                            )
+                    except Exception:
+                        pass
+                else:
+                    raise RuntimeError(f"Authorization failed: {result}")
 
     # ------------------------------------------------------------------
-    # Context manager helpers
+    # Helpers
     # ------------------------------------------------------------------
+    def update_headers(self, headers: Dict[str, str]) -> None:
+        if isinstance(self.session, PlaywrightSession):
+            self.session.update_headers(headers)
+        else:
+            self.session.headers.update(headers)
+
     def close(self) -> None:
-        self.session.close()
+        if isinstance(self.session, PlaywrightSession):
+            self.session.close()
+        else:
+            self.session.close()
 
     def __enter__(self) -> "Tele2Api":
         return self
@@ -122,7 +181,7 @@ class Tele2Api:
         response_option = self.session.get(self.url_reset_option)
         self.session.post(self.url_reset_pass, json={})
         if not _is_success(response_option):
-            return str(response_option.status_code)
+            return str(getattr(response_option, "status", response_option.status_code))
         return "OK"
 
     def authorization(self, sms_code: str, password_type: str = "sms_code") -> Union[str, Tuple[str, str]]:
@@ -135,13 +194,13 @@ class Tele2Api:
             "password": sms_code,
             "password_type": password_type,
         }
-        self.session.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        response = self.session.post(self.url_auth, data=payload, verify=False)
+        self.update_headers({"Content-Type": "application/x-www-form-urlencoded"})
+        response = self.session.post(self.url_auth, data=payload)
         if _is_success(response):
             data = response.json()
             self.access_token = data["access_token"]
             self.refresh_token = data["refresh_token"]
-            self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            self.update_headers({"Authorization": f"Bearer {self.access_token}"})
             return self.access_token, self.refresh_token
         return response.json().get("error_description", "error")
 
@@ -158,7 +217,7 @@ class Tele2Api:
             data = response.json()
             self.access_token = data["access_token"]
             self.refresh_token = data["refresh_token"]
-            self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+            self.update_headers({"Authorization": f"Bearer {self.access_token}"})
             return self.access_token, self.refresh_token
         return response.json().get("error_description", "error")
 
