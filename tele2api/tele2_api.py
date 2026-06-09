@@ -110,6 +110,7 @@ class Tele2Api:
         self.rests_api = f'{base_api}/rests'
         self.profile_api = f'{base_api}/profile'
         self.status_api = f'{base_api}/status'
+        self.tariff_api = f'{base_api}/tariff'
         self.charges_api = f'{base_api}/siteKHABAROVSK/charges'
         self.slaves_api = f'{base_api}/numbers/slaves'
         self.service_api = f'{base_api}/services'
@@ -270,6 +271,44 @@ class Tele2Api:
             'sms': total('pcs'),  # SMS приходят в единицах 'pcs'
         }
 
+    def get_rests_detailed(self) -> Union[List[dict], str]:
+        """Полная детализация остатков по пакетам (без схлопывания в суммы).
+
+        В отличие от :meth:`get_rests`, возвращает каждый пакет как есть. Полезные
+        поля каждого элемента: ``type`` (``'tariff'``/``'service'``/…),
+        ``trafficType`` (``data``/``voice``/``sms``), ``remain`` и ``initial``
+        (остаток и исходный объём в ``uom``), ``uom`` (``mb``/``min``/``pcs``),
+        ``rollover`` (перенос остатка), а с ``includePackageDescription`` — текстовое
+        описание пакета и срок действия.
+
+        :return: список пакетов остатков либо код ошибки.
+        """
+        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        if not self._ok(response):
+            return self._status(response)
+        return response.json()['data']['rests']
+
+    def get_rests_rollover(self) -> Dict[str, int]:
+        """Перенесённые с прошлых периодов остатки (rollover).
+
+        :meth:`get_rests` их исключает (на Маркете продаётся только основной
+        пакет тарифа, не перенос). Здесь — суммарный перенос по всем пакетам,
+        у которых ``rollover=True`` (включая ``type='service'``).
+
+        :return: ``{'data': ГБ, 'voice': минуты, 'sms': штуки}``.
+        """
+        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        rolled = [r for r in response.json()['data']['rests'] if r.get('rollover')]
+
+        def total(uom: str) -> int:
+            return int(sum(r['remain'] for r in rolled if r['uom'] == uom))
+
+        return {
+            'data': total('mb') // 1024,
+            'voice': total('min'),
+            'sms': total('pcs'),  # SMS приходят в единицах 'pcs'
+        }
+
     def get_profile(self) -> Optional[dict]:
         """Профиль абонента (``None`` при ошибке)."""
         response = self._get(self.profile_api)
@@ -296,6 +335,21 @@ class Tele2Api:
         if not self._ok(response):
             return self._status(response)
         return 'OK'
+
+    def get_tariff(self) -> Union[dict, str]:
+        """Текущий тариф абонента.
+
+        Возвращает словарь с данными тарифа: обычно название (``frontName`` /
+        ``tariffName``), абонентская плата (``abonentFee``), идентификатор
+        (``tariffId``/``id``), дата ближайшего списания и описание пакетов,
+        входящих в тариф. Точный набор полей зависит от тарифа.
+
+        :return: данные тарифа либо код ошибки.
+        """
+        response = self._get(self.tariff_api)
+        if not self._ok(response):
+            return self._status(response)
+        return response.json()['data']
 
     def get_charges(self, month: Optional[str] = None) -> Union[list, str]:
         """Расходы за месяц (в т.ч. на поднятие лотов «Маркет t2: Поднятие лота»).
@@ -432,6 +486,28 @@ class Tele2Api:
         return 'OK'
 
     # --- Услуги --------------------------------------------------------------
+
+    def get_services(self, status: Optional[str] = None) -> Union[List[dict], str]:
+        """Услуги абонента: подключённые и доступные для подключения.
+
+        Каждый элемент обычно содержит ``billingServiceId``/``id``, ``name``,
+        ``abonentFee`` (стоимость), ``status``/``isActive`` (подключена ли услуга)
+        и описание. ``billingServiceId`` подходит для подключения/отключения через
+        :meth:`mixx_update_subscribe` и прочие операции с услугами.
+
+        :param status: необязательный фильтр на стороне API (например
+            ``'connected'`` — только подключённые); по умолчанию — все услуги.
+        :return: список услуг либо код ошибки.
+        """
+        params = {'status': status} if status else None
+        response = self._get(self.service_api, params=params)
+        if not self._ok(response):
+            return self._status(response)
+        data = response.json()['data']
+        # ответ может прийти как список услуг или как {'services': [...]}
+        if isinstance(data, dict):
+            return data.get('services', data)
+        return data
 
     def mixx_update_subscribe(self, action: str = 'enable') -> Union[dict, str]:
         """Включить/выключить подписку MIXX.
