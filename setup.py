@@ -17,7 +17,7 @@ setup(
     packages=find_packages('.'),
     # Start with a small number and increase it with
     # every change you make https://semver.org
-    version='1.0.0',
+    version='2.0.0',
     # Chose a license from here: https: //
     # help.github.com / articles / licensing - a -
     # repository. For example: MIT
@@ -38,7 +38,7 @@ setup(
     # List of keywords
     keywords=[],
     # List of packages to install with this one
-    install_requires=["requests==2.27.1"],
+    install_requires=["curl_cffi>=0.7"],
     # https://pypi.org/classifiers/
     classifiers=[],
     entry_points={
