@@ -1,235 +1,454 @@
-import json
-import random
+"""Клиент API маркета t2 (бывш. Tele2).
 
-import requests
+Позволяет из Python авторизоваться по SMS-коду или паролю и работать с личным
+кабинетом и Маркетом: баланс, остатки, лоты (создание, поднятие «ракетой»,
+удаление), статус SIM-карты, расходы и т.д.
+
+Почему curl_cffi, а не requests
+-------------------------------
+В 2024 Tele2 ребрендировался в t2 (домен ``my.tele2.ru`` → ``my.t2.ru``), а API
+переехал на ``api.t2.ru``. Инфраструктура закрыта анти-ботом NGENIX: эндпоинты
+логина (``/auth/*``) и запроса SMS (``/api/validation/*``) пропускают запрос
+только если он неотличим от запроса мобильного приложения. Для этого нужно
+одновременно:
+
+1. TLS-рукопожатие как у okhttp/Android — его воспроизводит ``curl_cffi`` с
+   профилем :data:`IMPERSONATE`. Обычный ``requests``/``urllib`` (TLS OpenSSL)
+   получает ``403 Forbidden``.
+2. Заголовок ``Tele2-User-Agent`` — выставляется автоматически (см. :data:`HEADERS`).
+
+Благодаря этому полный цикл «запрос SMS → логин → вызовы API» работает без
+браузера, как делает официальное приложение. ``access_token`` живёт ~4 часа,
+затем обновляется через :meth:`Tele2Api.update_token`.
+
+Пример
+------
+>>> api = Tele2Api('79991234567')
+>>> api.get_sms_code()
+'OK'
+>>> api.authorization('123456')          # код из SMS
+('eyJ...', 'eyJ...')
+>>> api.get_balance()
+251.4
+"""
+
+import datetime
+import random
+import string
+from typing import Dict, List, Optional, Tuple, Union
+
+# curl_cffi вместо requests — для импер­сонации TLS мобильного приложения
+# (см. docstring модуля).
+from curl_cffi import requests
+
+__all__ = ['Tele2Api']
+
+# --- Сетевые константы -------------------------------------------------------
+
+DEFAULT_HOST = 'api.t2.ru'          # личный кабинет и Маркет
+AUTH_HOST = 'api.t2.ru'             # /auth (Keycloak) и /api/validation
+AUTH_REALM = 'tele2-b2c'            # realm Keycloak (НЕ t2-b2c)
+CLIENT_ID = 'digital-suite-web-app'
+IMPERSONATE = 'chrome131_android'   # TLS-профиль curl_cffi, проходящий NGENIX
 
 HEADERS = {
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
-            "Cache-Control": "max-age=0",
-            'Tele2-User-Agent': '"mytele2-app/4.14.0"; "unknown"; "Android/11"; "Build/164755374"',
-            'X-API-Version': '1',
-            'User-Agent': 'okhttp/4.2.0',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/json',
-            'Connection': 'keep-alive'
-        }
+    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7,de;q=0.6,fr;q=0.5',
+    'Cache-Control': 'max-age=0',
+    'Tele2-User-Agent': '"mytele2-app/4.14.0"; "unknown"; "Android/11"; "Build/164755374"',
+    'X-API-Version': '1',
+    'User-Agent': 'okhttp/4.2.0',
+    'Accept-Encoding': 'gzip, deflate',
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/json',
+    'Connection': 'keep-alive',
+}
 
-MAIN_API = 'https://my.tele2.ru/api/subscribers/'
-URL_VALIDATION = 'https://my.tele2.ru/api/validation/number/'
-URL_AUTH = 'https://my.tele2.ru/auth/realms/tele2-b2c/protocol/openid-connect/token'
-URL_RESET_OPTION = 'https://my.tele2.ru/auth/realms/tele2-b2c/credential-management/reset-options?username='
-URL_RESET_PASS = 'https://my.tele2.ru/auth/realms/tele2-b2c/credential-management/reset-password?username='
+# --- Доменные константы ------------------------------------------------------
+
+# Тип трафика лота -> единица измерения объёма
+TRAFFIC_UOM = {'voice': 'min', 'data': 'gb', 'sms': 'sms'}
+
+# Доступные эмодзи продавца на Маркете
+EMOJIS = ['cat', 'scream', 'bomb', 'rich', 'zipped', 'tongue', 'cool', 'devil']
+
+# billingServiceId подписки MIXX
+MIXX_SERVICE_ID = '31299'
 
 
-def _get_status_code(response):
-    return response.status_code == 200
+def _request_id(length: int = 40) -> str:
+    """Случайный X-Request-Id — t2 ожидает его в каждом запросе."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(random.choice(alphabet) for _ in range(length))
 
 
 class Tele2Api:
-    def __init__(self, phone_number: str, access_token: str = '', refresh_token: str = ''):
+    """Клиент API одного абонента t2.
+
+    :param phone_number: номер в формате ``79991234567``.
+    :param access_token: сохранённый access-токен (если уже авторизован).
+    :param refresh_token: сохранённый refresh-токен.
+    :param host: хост личного кабинета и Маркета.
+    :param auth_host: хост авторизации (Keycloak) и запроса SMS.
+    :param impersonate: TLS-профиль curl_cffi для прохождения NGENIX.
+    """
+
+    def __init__(self, phone_number: str, access_token: str = '', refresh_token: str = '',
+                 host: str = DEFAULT_HOST, auth_host: str = AUTH_HOST,
+                 impersonate: str = IMPERSONATE):
         self._phone_number = phone_number
-        base_api = MAIN_API + phone_number
-        self.market_api = f'{base_api}/exchange/lots/created'
-        self.bought_api = f'{base_api}/exchange/lots/bought'
-        self.rests_api = f'{base_api}/rests'
-        self.profile_api = f'{base_api}/profile'
-        self.balance_api = f'{base_api}/balance'
-        self.service_api = f'{base_api}/services'
-        self.url_validation = URL_VALIDATION + self._phone_number
-        self.url_auth = URL_AUTH
-        self.url_reset_option = URL_RESET_OPTION + self._phone_number
-        self.url_reset_pass = URL_RESET_PASS + self._phone_number
+        self._host = host
+        self._impersonate = impersonate
         self.access_token = access_token
         self.refresh_token = refresh_token
-        self.session = requests.Session()
-        self.session.headers = {
-            'Authorization': f'Bearer {self.access_token}',
-            **HEADERS
-        }
 
-    def get_sms_code(self, operation=None):
+        base_url = f'https://{host}'
+        auth_url = f'https://{auth_host}'
+        base_api = f'{base_url}/api/subscribers/{phone_number}'
+
+        # Личный кабинет и данные абонента
+        self.balance_api = f'{base_api}/balance'
+        self.rests_api = f'{base_api}/rests'
+        self.profile_api = f'{base_api}/profile'
+        self.status_api = f'{base_api}/status'
+        self.charges_api = f'{base_api}/siteKHABAROVSK/charges'
+        self.slaves_api = f'{base_api}/numbers/slaves'
+        self.service_api = f'{base_api}/services'
+
+        # Маркет
+        self.market_api = f'{base_api}/exchange/lots/created'
+        self.bought_api = f'{base_api}/exchange/lots/bought'
+        self.premium_api = f'{base_api}/exchange/lots/premium'
+        self.public_market_api = f'{base_api}/exchange/lots'
+
+        # Авторизация (за NGENIX — проходят только с импер­сонацией + Tele2-User-Agent)
+        self.url_validation = f'{auth_url}/api/validation/number/{phone_number}'
+        self.url_auth = f'{auth_url}/auth/realms/{AUTH_REALM}/protocol/openid-connect/token'
+        self.url_reset_option = (f'{auth_url}/auth/realms/{AUTH_REALM}'
+                                 f'/credential-management/reset-options?username={phone_number}')
+        self.url_reset_pass = (f'{auth_url}/auth/realms/{AUTH_REALM}'
+                               f'/credential-management/reset-password?username={phone_number}')
+
+        self.session = requests.Session(impersonate=impersonate)
+        self.session.headers.update({'Authorization': f'Bearer {access_token}', **HEADERS})
+
+    def __repr__(self) -> str:
+        return f'Tele2Api(phone_number={self._phone_number!r})'
+
+    # --- Низкоуровневые помощники --------------------------------------------
+
+    def _request(self, method: str, url: str, **kwargs):
+        """Запрос к API с автоматическим X-Request-Id."""
+        headers = {'X-Request-Id': _request_id()}
+        headers.update(kwargs.pop('headers', None) or {})
+        return self.session.request(method, url, headers=headers, **kwargs)
+
+    def _get(self, url: str, **kwargs):
+        return self._request('GET', url, **kwargs)
+
+    def _post(self, url: str, **kwargs):
+        return self._request('POST', url, **kwargs)
+
+    def _put(self, url: str, **kwargs):
+        return self._request('PUT', url, **kwargs)
+
+    def _patch(self, url: str, **kwargs):
+        return self._request('PATCH', url, **kwargs)
+
+    def _delete(self, url: str, **kwargs):
+        return self._request('DELETE', url, **kwargs)
+
+    @staticmethod
+    def _ok(response) -> bool:
+        return response.status_code == 200
+
+    @staticmethod
+    def _status(response) -> str:
+        """Код ошибки из ``meta`` тела ответа.
+
+        Если тело не JSON (например, страница NGENIX или ``SSO_NOT_CONFIGURED``),
+        возвращает текст ответа либо HTTP-код.
         """
-        Получение одноразового sms-кода для авторизации
-        :return:
+        try:
+            return response.json()['meta']['status']
+        except (ValueError, KeyError, TypeError):
+            return response.text.strip() or f'HTTP {response.status_code}'
+
+    def _store_tokens(self, payload: dict) -> Tuple[str, str]:
+        """Сохранить токены из ответа Keycloak и обновить заголовок сессии."""
+        self.access_token = payload['access_token']
+        self.refresh_token = payload['refresh_token']
+        self.session.headers['Authorization'] = f'Bearer {self.access_token}'
+        return self.access_token, self.refresh_token
+
+    # --- Авторизация ---------------------------------------------------------
+
+    def get_sms_code(self, operation: Optional[str] = None) -> str:
+        """Запросить одноразовый SMS-код для авторизации.
+
+        :param operation: необязательный тип операции.
+        :return: ``'OK'`` либо текст ошибки.
         """
-        data = {"sender": "Tele2"}
+        data = {'sender': 'Tele2'}
         if operation is not None:
             data['operation'] = operation
-        data = json.dumps(data)
-        response = self.session.post(self.url_validation, data=data)
-        if not _get_status_code(response):
+        response = self._post(self.url_validation, json=data)
+        if not self._ok(response):
             return response.json().get('detail')
         return 'OK'
 
-    def reset_password(self):
+    def authorization(self, sms_code: str,
+                      password_type: str = 'sms_code') -> Union[Tuple[str, str], str]:
+        """Авторизоваться и сохранить токены.
+
+        :param sms_code: одноразовый SMS-код либо постоянный пароль.
+        :param password_type: ``'sms_code'`` или ``'password'``.
+        :return: пара ``(access_token, refresh_token)`` либо текст ошибки.
         """
-        Получение нового постоянного пароля
-        :return:
+        data = {
+            'client_id': CLIENT_ID,
+            'grant_type': 'password',
+            'username': self._phone_number,
+            'password': sms_code,
+            'password_type': password_type,
+        }
+        response = self._post(self.url_auth, data=data,
+                              headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        if not self._ok(response):
+            return response.json()['error_description']
+        return self._store_tokens(response.json())
+
+    def update_token(self, refresh_token: Optional[str] = None) -> Union[Tuple[str, str], str]:
+        """Обновить access-токен по refresh-токену.
+
+        :param refresh_token: refresh-токен; по умолчанию — сохранённый в клиенте.
+        :return: пара ``(access_token, refresh_token)`` либо текст ошибки.
         """
-        data = json.dumps({})
-        response_option = self.session.get(self.url_reset_option)
-        response_pass = self.session.post(self.url_reset_pass, data=data)
-        if not _get_status_code(response_option):
-            return _get_status_code(response_option)
+        response = self._post(self.url_auth, data={
+            'client_id': CLIENT_ID,
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token or self.refresh_token,
+        })
+        if not self._ok(response):
+            return response.json()['error_description']
+        return self._store_tokens(response.json())
+
+    def reset_password(self) -> str:
+        """Запросить новый постоянный пароль.
+
+        :return: ``'OK'`` либо ``False``.
+        """
+        response_option = self._get(self.url_reset_option)
+        self._post(self.url_reset_pass, json={})
+        if not self._ok(response_option):
+            return self._ok(response_option)
         return 'OK'
 
-    def authorization(self, sms_code: str, password_type: str = 'sms_code' or 'password'):
-        """
-        Авторизация
-        :param sms_code: одноразовый sms-код, либо постоянный пароль для входа
-        :param password_type: выбор способа авторизации: 'sms_code' или 'password'
-        :return: Получаем access_token и refresh_token
-        """
-        data_auth = {"client_id": "digital-suite-web-app", "grant_type": "password", "username": self._phone_number,
-                     "password": sms_code, "password_type": password_type}
-        self.session.headers['Content-Type'] = 'application/x-www-form-urlencoded'
-        response = self.session.post(self.url_auth, data_auth, verify=False)
-        if _get_status_code(response):
-            self.access_token = response.json()['access_token']
-            self.refresh_token = response.json()['refresh_token']
-            return response.json()['access_token'], response.json()['refresh_token']
-        return response.json()['error_description']
+    # --- Данные абонента -----------------------------------------------------
 
-    def refresh_token(self, refresh_token: str):
-        """
-        Обновления токена для авторизации
-        :param refresh_token: нужно передать в качестве параметра refresh_token, полученный в прошлой сессии
-        :return:
-        """
-        response = self.session.post(self.url_auth, data={
-            'client_id': 'digital-suite-web-app',
-            'grant_type': 'refresh_token',
-            'refresh_token': refresh_token,
-        })
-        if _get_status_code(response):
-            return response.json()['access_token'], response.json()['refresh_token']
-        return response.json()['error_description']
-
-    def get_balance(self):
-        """
-        Получение данных о балансе
-        :return:
-        """
-        response = self.session.get(self.balance_api)
-        if _get_status_code(response):
+    def get_balance(self) -> Optional[float]:
+        """Баланс в рублях (``None`` при ошибке)."""
+        response = self._get(self.balance_api)
+        if self._ok(response):
             return response.json()['data']['value']
+        return None
 
-    def get_rests(self):
+    def get_rests(self) -> Dict[str, int]:
+        """Остатки, доступные для продажи на Маркете.
+
+        :return: ``{'data': ГБ, 'voice': минуты, 'sms': штуки}``.
         """
-        Получение остатков, доступных для продаж на Маркете
-        :return:
-        """
-        response = self.session.get(self.rests_api)
-        response_json = response.json()
-        rests = list(response_json['data']['rests'])
-        sellable = [a for a in rests if a['type'] == 'tariff' and a['rollover'] == False]
+        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        rests = response.json()['data']['rests']
+        sellable = [r for r in rests if r['type'] == 'tariff' and not r['rollover']]
+
+        def total(uom: str) -> int:
+            return int(sum(r['remain'] for r in sellable if r['uom'] == uom))
+
         return {
-            'data': int(
-                sum(a['remain'] for a in sellable if a['uom'] == 'mb') / 1024),
-            'voice': int(
-                sum(a['remain'] for a in sellable if a['uom'] == 'min'))
+            'data': total('mb') // 1024,
+            'voice': total('min'),
+            'sms': total('pcs'),  # SMS приходят в единицах 'pcs'
         }
 
-    def create_lot(self, traffic_type, value, amount, emojis='None'):
+    def get_profile(self) -> Optional[dict]:
+        """Профиль абонента (``None`` при ошибке)."""
+        response = self._get(self.profile_api)
+        if self._ok(response):
+            return response.json()['data']
+        return None
+
+    def get_status(self) -> str:
+        """Статус SIM-карты (``'ACTIVATED'`` / ``'SUSPENDED'`` и т.п.)."""
+        response = self._get(self.status_api)
+        if not self._ok(response):
+            return self._status(response)
+        data = response.json()['data']
+        # обычно строка-статус, но на части аккаунтов — объект {'status': ...}
+        return data['status'] if isinstance(data, dict) else data
+
+    def set_status(self, status: str) -> str:
+        """Заблокировать/разблокировать SIM-карту.
+
+        :param status: ``'SUSPENDED'`` (заблокировать) или ``'ACTIVATED'``.
+        :return: ``'OK'`` либо код ошибки.
         """
-        Создание нового лота
-        :param emojis: если не хотим использовать, оставляем 'None', либо передаем значение 'random',
-        либо список необходимых эмоджи: 'cat', 'scream', 'bomb', 'rich', 'zipped', 'tongue', 'cool', 'devil'
-        :param traffic_type: тип трафика ('voice' или 'data')
-        :param value: число минут или Гб одного лота
-        :param amount: стоимость лота
-        :return:
+        response = self._put(self.status_api, json=status)
+        if not self._ok(response):
+            return self._status(response)
+        return 'OK'
+
+    def get_charges(self, month: Optional[str] = None) -> Union[list, str]:
+        """Расходы за месяц (в т.ч. на поднятие лотов «Маркет t2: Поднятие лота»).
+
+        :param month: ``'YYYY-MM'``; по умолчанию — текущий месяц.
+        :return: данные расходов либо код ошибки.
         """
-        response = self.session.put(self.market_api, json={
+        if month is None:
+            month = datetime.date.today().strftime('%Y-%m')
+        response = self._get(self.charges_api, params={'month': month},
+                             headers={'x-api-version': '2'})
+        if not self._ok(response):
+            return self._status(response)
+        return response.json()['data']
+
+    def get_slaves(self) -> Optional[list]:
+        """Список привязанных номеров (``None`` при ошибке)."""
+        response = self._get(self.slaves_api)
+        if self._ok(response):
+            return response.json()
+        return None
+
+    # --- Маркет --------------------------------------------------------------
+
+    def get_active_lots(self) -> Optional[List[dict]]:
+        """Список активных лотов (``None`` при ошибке)."""
+        response = self._get(self.market_api)
+        if self._ok(response):
+            return [lot for lot in response.json()['data'] if lot['status'] == 'active']
+        return None
+
+    def create_lot(self, traffic_type: str, value: int, amount: int,
+                   emojis: Union[str, List[str]] = 'None') -> str:
+        """Создать новый лот.
+
+        :param traffic_type: ``'voice'``, ``'data'`` или ``'sms'``.
+        :param value: объём лота (минуты / ГБ / SMS).
+        :param amount: цена лота в рублях.
+        :param emojis: ``'None'`` — без эмодзи; ``'random'`` — три случайных;
+            либо список значений из :data:`EMOJIS`.
+        :return: id созданного лота либо код ошибки.
+        """
+        response = self._put(self.market_api, json={
             'trafficType': traffic_type,
             'cost': {'amount': amount, 'currency': 'rub'},
-            'volume': {'value': value,
-                       'uom': 'min' if traffic_type == 'voice' else 'gb'}
+            'volume': {'value': value, 'uom': TRAFFIC_UOM.get(traffic_type, 'gb')},
         })
-        if not _get_status_code(response):
-            print(response.json())
-            return response.json()['meta']['status']
-        id_lot = response.json()["data"]["id"]
-        if emojis != 'None':
-            if emojis == 'random':
-                all_emojis = ['cat', 'scream', 'bomb', 'rich', 'zipped', 'tongue', 'cool', 'devil']
-                list_emojis = []
-                for _ in range(3):
-                    list_emojis.append(random.choice(all_emojis))
-            else:
-                list_emojis = emojis
-            response = self.session.patch(self.market_api + '/{}'.format(id_lot), json={
-                "showSellerName": True, "emojis": list_emojis,
-                "cost": {"amount": amount, "currency": "rub"}
-            })
+        if not self._ok(response):
+            return self._status(response)
 
+        id_lot = response.json()['data']['id']
+        if emojis != 'None':
+            selected = random.choices(EMOJIS, k=3) if emojis == 'random' else emojis
+            self._patch(f'{self.market_api}/{id_lot}', json={
+                'showSellerName': True,
+                'emojis': selected,
+                'cost': {'amount': amount, 'currency': 'rub'},
+            })
         return id_lot
 
-    def patch_lot(self, id_lot, amount):
+    def patch_lot(self, id_lot: str, amount: int) -> str:
+        """Изменить цену лота.
+
+        :param id_lot: id лота.
+        :param amount: новая цена в рублях.
+        :return: ``'OK'`` либо код ошибки.
         """
-        Изменение цены лота
-        :param id_lot: необходимо передать id лота
-        :param amount: новая цена лота
-        :return:
-        """
-        response = self.session.patch(self.market_api + '/{}'.format(id_lot), json={
-            'cost': {'amount': amount, 'currency': 'rub'}
+        response = self._patch(f'{self.market_api}/{id_lot}', json={
+            'cost': {'amount': amount, 'currency': 'rub'},
         })
-        if not _get_status_code(response):
-            return response.json()['meta']['status']
+        if not self._ok(response):
+            return self._status(response)
         return 'OK'
 
-    def bought_lot(self, sms_code, lot):
-        response = self.session.put(self.bought_api + '?validationCode={}'.format(sms_code),
-                                    json={"volume": {"value": lot['volume']['value'], "uom": lot['volume']['uom']},
-                                          "cost": {"amount": lot['cost']['amount'], "currency": "rub"},
-                                          "lotId": lot['id'],
-                                          "hash": lot['hash'], "trafficType": lot['trafficType']})
-        if not _get_status_code(response):
-            return response.json()['meta']['status']
+    def premium_lot(self, id_lot: str) -> str:
+        """Поднять лот в топ выдачи («ракета», стоит 5 руб.).
+
+        :param id_lot: id лота.
+        :return: ``'OK'`` либо код ошибки.
+        """
+        response = self._put(self.premium_api, json={'lotId': id_lot})
+        if not self._ok(response):
+            return self._status(response)
         return 'OK'
 
-    def delete_lot(self, id_lot):
+    def delete_lot(self, id_lot: str) -> str:
+        """Снять лот с продажи.
+
+        :param id_lot: id лота.
+        :return: ``'OK'`` либо код ошибки.
         """
-        :param id_lot: необходимо передать id лота
-        :return: Снимаем с продажи лот
-        """
-        response = self.session.delete(self.market_api + '/{}'.format(id_lot))
-        if not _get_status_code(response):
-            return response.json()['meta']['status']
+        response = self._delete(f'{self.market_api}/{id_lot}')
+        if not self._ok(response):
+            return self._status(response)
         return 'OK'
 
-    def get_active_lots(self):
-        """
-        :return: Получаем список активных лотов
-        """
-        response = self.session.get(self.market_api)
-        # print(response.json())
-        if _get_status_code(response):
-            response_json = response.json()
-            lots = list(response_json['data'])
-            active_lots = [a for a in lots if a['status'] == 'active']
-            return active_lots
+    def get_lot_position(self, traffic_type: str, value: int, amount: int,
+                         limit: int = 666) -> Union[List[dict], str]:
+        """Лоты с заданными параметрами в публичной выдаче Маркета (по порядку).
 
-    def mixx_update_subscribe(self, action="enable"):
-        json_data = {
+        :param traffic_type: ``'voice'``, ``'data'`` или ``'sms'``.
+        :param value: объём лота.
+        :param amount: цена лота.
+        :param limit: глубина выборки.
+        :return: список лотов либо код ошибки.
+        """
+        response = self._get(self.public_market_api, params={
+            'trafficType': traffic_type,
+            'volume': value,
+            'cost': amount,
+            'offset': 0,
+            'limit': limit,
+        })
+        if not self._ok(response):
+            return self._status(response)
+        return response.json()['data']
+
+    def bought_lot(self, sms_code: str, lot: dict) -> str:
+        """Купить лот на Маркете.
+
+        :param sms_code: код подтверждения покупки.
+        :param lot: словарь лота (из :meth:`get_lot_position`).
+        :return: ``'OK'`` либо код ошибки.
+        """
+        response = self._put(f'{self.bought_api}?validationCode={sms_code}', json={
+            'volume': {'value': lot['volume']['value'], 'uom': lot['volume']['uom']},
+            'cost': {'amount': lot['cost']['amount'], 'currency': 'rub'},
+            'lotId': lot['id'],
+            'hash': lot['hash'],
+            'trafficType': lot['trafficType'],
+        })
+        if not self._ok(response):
+            return self._status(response)
+        return 'OK'
+
+    # --- Услуги --------------------------------------------------------------
+
+    def mixx_update_subscribe(self, action: str = 'enable') -> Union[dict, str]:
+        """Включить/выключить подписку MIXX.
+
+        :param action: ``'enable'`` или ``'disable'``.
+        :return: ``'OK'`` либо тело ответа с ошибкой.
+        """
+        self._post(f'{self.service_api}/notifications/check', json={
             'operationType': 'change_service',
-            'changedServices': [
-                {
-                    'billingServiceId': '31299',
-                    'action': action,
-                },
-            ],
-        }
-        response = self.session.post(f'{self.service_api}/notifications/check',
-                                 json=json_data)
-        if action == "enable":
-            response = self.session.put(f'{self.service_api}/31299')
-        elif action == "disable":
-            response = self.session.delete(f'{self.service_api}/31299')
-        if not _get_status_code(response):
+            'changedServices': [{'billingServiceId': MIXX_SERVICE_ID, 'action': action}],
+        })
+        if action == 'enable':
+            response = self._put(f'{self.service_api}/{MIXX_SERVICE_ID}')
+        elif action == 'disable':
+            response = self._delete(f'{self.service_api}/{MIXX_SERVICE_ID}')
+        else:
+            raise ValueError("action должен быть 'enable' или 'disable'")
+        if not self._ok(response):
             return response.json()
         return 'OK'
-
-
