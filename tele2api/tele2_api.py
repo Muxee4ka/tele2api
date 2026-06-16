@@ -181,6 +181,10 @@ class Tele2Api:
         self.session.headers['Authorization'] = f'Bearer {self.access_token}'
         return self.access_token, self.refresh_token
 
+    def _sub(self, subscriber: Optional[str] = None) -> str:
+        """Base subscriber URL for ``subscriber`` (defaults to the master number)."""
+        return f'https://{self._host}/api/subscribers/{subscriber or self._phone_number}'
+
     # --- Авторизация ---------------------------------------------------------
 
     def get_sms_code(self, operation: Optional[str] = None) -> str:
@@ -246,19 +250,20 @@ class Tele2Api:
 
     # --- Данные абонента -----------------------------------------------------
 
-    def get_balance(self) -> Optional[float]:
+    def get_balance(self, subscriber: Optional[str] = None) -> Optional[float]:
         """Баланс в рублях (``None`` при ошибке)."""
-        response = self._get(self.balance_api)
+        response = self._get(f'{self._sub(subscriber)}/balance')
         if self._ok(response):
             return response.json()['data']['value']
         return None
 
-    def get_rests(self) -> Dict[str, int]:
+    def get_rests(self, subscriber: Optional[str] = None) -> Dict[str, int]:
         """Остатки, доступные для продажи на Маркете.
 
         :return: ``{'data': ГБ, 'voice': минуты, 'sms': штуки}``.
         """
-        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        response = self._get(f'{self._sub(subscriber)}/rests',
+                             params={'includePackageDescription': 'true'})
         rests = response.json()['data']['rests']
         sellable = [r for r in rests if r['type'] == 'tariff' and not r['rollover']]
 
@@ -271,7 +276,7 @@ class Tele2Api:
             'sms': total('pcs'),  # SMS приходят в единицах 'pcs'
         }
 
-    def get_rests_detailed(self) -> Union[List[dict], str]:
+    def get_rests_detailed(self, subscriber: Optional[str] = None) -> Union[List[dict], str]:
         """Полная детализация остатков по пакетам (без схлопывания в суммы).
 
         В отличие от :meth:`get_rests`, возвращает каждый пакет как есть. Полезные
@@ -283,12 +288,13 @@ class Tele2Api:
 
         :return: список пакетов остатков либо код ошибки.
         """
-        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        response = self._get(f'{self._sub(subscriber)}/rests',
+                             params={'includePackageDescription': 'true'})
         if not self._ok(response):
             return self._status(response)
         return response.json()['data']['rests']
 
-    def get_rests_rollover(self) -> Dict[str, int]:
+    def get_rests_rollover(self, subscriber: Optional[str] = None) -> Dict[str, int]:
         """Перенесённые с прошлых периодов остатки (rollover).
 
         :meth:`get_rests` их исключает (на Маркете продаётся только основной
@@ -297,7 +303,8 @@ class Tele2Api:
 
         :return: ``{'data': ГБ, 'voice': минуты, 'sms': штуки}``.
         """
-        response = self._get(self.rests_api, params={'includePackageDescription': 'true'})
+        response = self._get(f'{self._sub(subscriber)}/rests',
+                             params={'includePackageDescription': 'true'})
         rolled = [r for r in response.json()['data']['rests'] if r.get('rollover')]
 
         def total(uom: str) -> int:
@@ -309,34 +316,35 @@ class Tele2Api:
             'sms': total('pcs'),  # SMS приходят в единицах 'pcs'
         }
 
-    def get_profile(self) -> Optional[dict]:
+    def get_profile(self, subscriber: Optional[str] = None) -> Optional[dict]:
         """Профиль абонента (``None`` при ошибке)."""
-        response = self._get(self.profile_api)
+        response = self._get(f'{self._sub(subscriber)}/profile')
         if self._ok(response):
             return response.json()['data']
         return None
 
-    def get_status(self) -> str:
+    def get_status(self, subscriber: Optional[str] = None) -> str:
         """Статус SIM-карты (``'ACTIVATED'`` / ``'SUSPENDED'`` и т.п.)."""
-        response = self._get(self.status_api)
+        response = self._get(f'{self._sub(subscriber)}/status')
         if not self._ok(response):
             return self._status(response)
         data = response.json()['data']
         # обычно строка-статус, но на части аккаунтов — объект {'status': ...}
         return data['status'] if isinstance(data, dict) else data
 
-    def set_status(self, status: str) -> str:
+    def set_status(self, status: str, subscriber: Optional[str] = None) -> str:
         """Заблокировать/разблокировать SIM-карту.
 
         :param status: ``'SUSPENDED'`` (заблокировать) или ``'ACTIVATED'``.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: ``'OK'`` либо код ошибки.
         """
-        response = self._put(self.status_api, json=status)
+        response = self._put(f'{self._sub(subscriber)}/status', json=status)
         if not self._ok(response):
             return self._status(response)
         return 'OK'
 
-    def get_tariff(self) -> Union[dict, str]:
+    def get_tariff(self, subscriber: Optional[str] = None) -> Union[dict, str]:
         """Текущий тариф абонента.
 
         Возвращает словарь с данными тарифа: обычно название (``frontName`` /
@@ -346,43 +354,47 @@ class Tele2Api:
 
         :return: данные тарифа либо код ошибки.
         """
-        response = self._get(self.tariff_api)
+        response = self._get(f'{self._sub(subscriber)}/tariff')
         if not self._ok(response):
             return self._status(response)
         return response.json()['data']
 
-    def get_charges(self, month: Optional[str] = None) -> Union[list, str]:
+    def get_charges(self, month: Optional[str] = None,
+                    subscriber: Optional[str] = None) -> Union[list, str]:
         """Расходы за месяц (в т.ч. на поднятие лотов «Маркет t2: Поднятие лота»).
 
         :param month: ``'YYYY-MM'``; по умолчанию — текущий месяц.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: данные расходов либо код ошибки.
         """
         if month is None:
             month = datetime.date.today().strftime('%Y-%m')
-        response = self._get(self.charges_api, params={'month': month},
+        response = self._get(f'{self._sub(subscriber)}/siteKHABAROVSK/charges',
+                             params={'month': month},
                              headers={'x-api-version': '2'})
         if not self._ok(response):
             return self._status(response)
         return response.json()['data']
 
-    def get_slaves(self) -> Optional[list]:
+    def get_slaves(self, subscriber: Optional[str] = None) -> Optional[list]:
         """Список привязанных номеров (``None`` при ошибке)."""
-        response = self._get(self.slaves_api)
+        response = self._get(f'{self._sub(subscriber)}/numbers/slaves')
         if self._ok(response):
             return response.json()
         return None
 
     # --- Маркет --------------------------------------------------------------
 
-    def get_active_lots(self) -> Optional[List[dict]]:
+    def get_active_lots(self, subscriber: Optional[str] = None) -> Optional[List[dict]]:
         """Список активных лотов (``None`` при ошибке)."""
-        response = self._get(self.market_api)
+        response = self._get(f'{self._sub(subscriber)}/exchange/lots/created')
         if self._ok(response):
             return [lot for lot in response.json()['data'] if lot['status'] == 'active']
         return None
 
     def create_lot(self, traffic_type: str, value: int, amount: int,
-                   emojis: Union[str, List[str]] = 'None') -> str:
+                   emojis: Union[str, List[str]] = 'None',
+                   subscriber: Optional[str] = None) -> str:
         """Создать новый лот.
 
         :param traffic_type: ``'voice'``, ``'data'`` или ``'sms'``.
@@ -390,9 +402,11 @@ class Tele2Api:
         :param amount: цена лота в рублях.
         :param emojis: ``'None'`` — без эмодзи; ``'random'`` — три случайных;
             либо список значений из :data:`EMOJIS`.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: id созданного лота либо код ошибки.
         """
-        response = self._put(self.market_api, json={
+        market_url = f'{self._sub(subscriber)}/exchange/lots/created'
+        response = self._put(market_url, json={
             'trafficType': traffic_type,
             'cost': {'amount': amount, 'currency': 'rub'},
             'volume': {'value': value, 'uom': TRAFFIC_UOM.get(traffic_type, 'gb')},
@@ -403,60 +417,69 @@ class Tele2Api:
         id_lot = response.json()['data']['id']
         if emojis != 'None':
             selected = random.choices(EMOJIS, k=3) if emojis == 'random' else emojis
-            self._patch(f'{self.market_api}/{id_lot}', json={
+            self._patch(f'{market_url}/{id_lot}', json={
                 'showSellerName': True,
                 'emojis': selected,
                 'cost': {'amount': amount, 'currency': 'rub'},
             })
         return id_lot
 
-    def patch_lot(self, id_lot: str, amount: int) -> str:
+    def patch_lot(self, id_lot: str, amount: int,
+                  subscriber: Optional[str] = None) -> str:
         """Изменить цену лота.
 
         :param id_lot: id лота.
         :param amount: новая цена в рублях.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: ``'OK'`` либо код ошибки.
         """
-        response = self._patch(f'{self.market_api}/{id_lot}', json={
-            'cost': {'amount': amount, 'currency': 'rub'},
-        })
+        response = self._patch(
+            f'{self._sub(subscriber)}/exchange/lots/created/{id_lot}',
+            json={'cost': {'amount': amount, 'currency': 'rub'}},
+        )
         if not self._ok(response):
             return self._status(response)
         return 'OK'
 
-    def premium_lot(self, id_lot: str) -> str:
+    def premium_lot(self, id_lot: str, subscriber: Optional[str] = None) -> str:
         """Поднять лот в топ выдачи («ракета», стоит 5 руб.).
 
         :param id_lot: id лота.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: ``'OK'`` либо код ошибки.
         """
-        response = self._put(self.premium_api, json={'lotId': id_lot})
+        response = self._put(f'{self._sub(subscriber)}/exchange/lots/premium',
+                             json={'lotId': id_lot})
         if not self._ok(response):
             return self._status(response)
         return 'OK'
 
-    def delete_lot(self, id_lot: str) -> str:
+    def delete_lot(self, id_lot: str, subscriber: Optional[str] = None) -> str:
         """Снять лот с продажи.
 
         :param id_lot: id лота.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: ``'OK'`` либо код ошибки.
         """
-        response = self._delete(f'{self.market_api}/{id_lot}')
+        response = self._delete(
+            f'{self._sub(subscriber)}/exchange/lots/created/{id_lot}')
         if not self._ok(response):
             return self._status(response)
         return 'OK'
 
     def get_lot_position(self, traffic_type: str, value: int, amount: int,
-                         limit: int = 666) -> Union[List[dict], str]:
+                         limit: int = 666,
+                         subscriber: Optional[str] = None) -> Union[List[dict], str]:
         """Лоты с заданными параметрами в публичной выдаче Маркета (по порядку).
 
         :param traffic_type: ``'voice'``, ``'data'`` или ``'sms'``.
         :param value: объём лота.
         :param amount: цена лота.
         :param limit: глубина выборки.
+        :param subscriber: номер абонента; по умолчанию — основной номер.
         :return: список лотов либо код ошибки.
         """
-        response = self._get(self.public_market_api, params={
+        response = self._get(f'{self._sub(subscriber)}/exchange/lots', params={
             'trafficType': traffic_type,
             'volume': value,
             'cost': amount,
