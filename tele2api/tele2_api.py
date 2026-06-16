@@ -532,6 +532,42 @@ class Tele2Api:
             return data.get('services', data)
         return data
 
+    def connect_service(self, billing_id: str,
+                        subscriber: Optional[str] = None) -> str:
+        """Подключить услугу по её ``billingServiceId``.
+
+        :param billing_id: ``billingServiceId`` услуги (из :meth:`get_services`).
+        :param subscriber: номер абонента; по умолчанию — основной номер.
+        :return: ``'OK'`` либо код ошибки.
+        """
+        svc = f'{self._sub(subscriber)}/services'
+        self._post(f'{svc}/notifications/check', json={
+            'operationType': 'change_service',
+            'changedServices': [{'billingServiceId': billing_id, 'action': 'enable'}],
+        })
+        response = self._put(f'{svc}/{billing_id}')
+        if not self._ok(response):
+            return self._status(response)
+        return 'OK'
+
+    def disconnect_service(self, billing_id: str,
+                           subscriber: Optional[str] = None) -> str:
+        """Отключить услугу по её ``billingServiceId``.
+
+        :param billing_id: ``billingServiceId`` услуги (из :meth:`get_services`).
+        :param subscriber: номер абонента; по умолчанию — основной номер.
+        :return: ``'OK'`` либо код ошибки.
+        """
+        svc = f'{self._sub(subscriber)}/services'
+        self._post(f'{svc}/notifications/check', json={
+            'operationType': 'change_service',
+            'changedServices': [{'billingServiceId': billing_id, 'action': 'disable'}],
+        })
+        response = self._delete(f'{svc}/{billing_id}')
+        if not self._ok(response):
+            return self._status(response)
+        return 'OK'
+
     def mixx_update_subscribe(self, action: str = 'enable') -> Union[dict, str]:
         """Включить/выключить подписку MIXX.
 

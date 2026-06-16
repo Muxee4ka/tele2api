@@ -44,6 +44,36 @@ def test_sub_helper_override():
     assert api._sub(SLAVE) == f"https://api.t2.ru/api/subscribers/{SLAVE}"
 
 
+@pytest.mark.parametrize("http_method,svc_method,action_suffix", [
+    ("_put", "connect_service", "enable"),
+    ("_delete", "disconnect_service", "disable"),
+])
+def test_service_toggle_url_and_check(monkeypatch, http_method, svc_method, action_suffix):
+    api = Tele2Api(MASTER, access_token="t")
+    calls = []
+
+    def fake_post(url, **k):
+        calls.append(("post", url, k))
+        return _FakeResp(200, {})
+
+    def fake_action(url, **k):
+        calls.append(("action", url))
+        return _FakeResp(200, {})
+
+    monkeypatch.setattr(api, "_post", fake_post)
+    monkeypatch.setattr(api, http_method, fake_action)
+
+    result = getattr(api, svc_method)("99999", subscriber=SLAVE)
+
+    assert result == "OK"
+    check_url = calls[0][1]
+    assert f"/subscribers/{SLAVE}/services/notifications/check" in check_url
+    body = calls[0][2].get("json", {})
+    assert body["changedServices"][0]["action"] == action_suffix
+    action_url = calls[1][1]
+    assert f"/subscribers/{SLAVE}/services/99999" in action_url
+
+
 @pytest.mark.parametrize("method,kwargs,suffix,body", [
     ("get_balance", {}, "/balance", {"data": {"value": 1.0}}),
     ("get_rests", {}, "/rests", {"data": {"rests": []}}),
