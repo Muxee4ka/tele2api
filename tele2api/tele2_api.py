@@ -232,9 +232,9 @@ class Tele2Api:
             'client_id': CLIENT_ID,
             'grant_type': 'refresh_token',
             'refresh_token': refresh_token or self.refresh_token,
-        })
+        }, headers={'Content-Type': 'application/x-www-form-urlencoded'})
         if not self._ok(response):
-            return response.json()['error_description']
+            return response.json().get('error_description', response.text)
         return self._store_tokens(response.json())
 
     def reset_password(self) -> str:
