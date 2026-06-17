@@ -65,7 +65,7 @@ def test_service_toggle_url_and_check(monkeypatch, http_method, svc_method, acti
 
     result = getattr(api, svc_method)("99999", subscriber=SLAVE)
 
-    assert result == "OK"
+    assert result is None
     check_url = calls[0][1]
     assert f"/subscribers/{SLAVE}/services/notifications/check" in check_url
     body = calls[0][2].get("json", {})
